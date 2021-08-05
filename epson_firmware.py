@@ -39,7 +39,7 @@ _font_name_to_code = {
 def font_name_to_code(font_name):
     result = _font_name_to_code.get(font_name)
     if result is None:
-        print("Unknown font", font_name)
+        #print("Unknown font", font_name)
         return 0
     return result
 

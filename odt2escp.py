@@ -27,7 +27,7 @@ class Word:
         return str(self.text)
 
 class PrinterOutput:
-    def __init__(self, file, page_width=8.5, page_height=11, margin_top=.5, margin_bottom=.5, margin_right=.5, margin_left=.5, character_table="PC1250"):
+    def __init__(self, file, page_width=8.5, page_height=11, page_usage=None, margin_top=.5, margin_bottom=.5, margin_right=.5, margin_left=.5, character_table="PC1250"):
         self.outfile = file
         self.line = [] # the current line
         self.word = Word(bytearray()) # the current word
@@ -35,10 +35,12 @@ class PrinterOutput:
         self.line_height = 0
         self.page_width = page_width
         self.page_height = page_height
+        self.page_usage = page_usage
         self.margin_top = margin_top
         self.margin_bottom = margin_bottom
         self.margin_right = margin_right
         self.margin_left = margin_left
+        self.last_margin_left = None
         self.max_text_width = page_width - margin_left - margin_right
         self.allow_leading_whitespace = False
         self.allow_line_indent = False
@@ -53,13 +55,19 @@ class PrinterOutput:
         self.esc('p', 1) # proportional mode
         self.pitch = None # None means proportional pitch
         self.esc('x', 1) # letter quality
-        self.set_page_margins()
+        self.set_page_margins(1)
 
-    def set_page_margins(self):
-        top = int(self.margin_top*360)
-        bottom = int((self.page_height - self.margin_bottom)*360)
+    def set_page_margins(self, page_number):
+        margin_left = self.margin_left
+        if self.page_usage and self.page_usage == "mirrored" and page_number % 2:
+            margin_left = self.margin_right
+        if margin_left == self.last_margin_left:
+            return
+        top = int((self.margin_top-0.1)*360)
+        bottom = int((self.page_height - self.margin_bottom + 0.2) * 360)
         self.esc('(c', 4,0, top & 0xff, (top >> 8) & 0xff, bottom & 0xff, (bottom >> 8) & 0xff) # set page length
-        self.esc('l', int(self.margin_left * 10 - 1)) # set left margin
+        self.esc('l', int(margin_left * 10 - 1)) # set left margin
+        self.last_margin_left = margin_left
 
     def load_character_table(self, table_name):
         code = character_table_to_code.get(table_name)
@@ -226,15 +234,17 @@ class PrinterOutput:
         if self.paragraph.margin_bottom:
             self.set_relative_vertical_position(self.paragraph.margin_bottom)
 
-    def new_page(self):
+    def new_page(self, page_number):
         self.add_word()
         if self.line:
             self.process_line()
         self.write(b"\r")
         self.write(b"\f") # form feed
+        if self.page_usage == "mirrored":
+            self.set_page_margins(page_number)
 
     def end(self):
-        self.new_page()
+        self.new_page(0)
         self.esc('@')
 
     def add_word(self):
@@ -249,7 +259,7 @@ class PrinterOutput:
             return 30
         return proportional_character_width.get(c)
 
-    def text_to_words(self, text, height):
+    def text_to_words(self, text, height, encoding):
         words = []
         i = 0
         while i < len(text):
@@ -260,7 +270,7 @@ class PrinterOutput:
                 words.append(Word(text[i:i+1], height=height, may_break = True))
                 text = text[i+1:]
                 i = 0
-            elif c == ord('-'):
+            elif c == ord('-') or (encoding.startswith('windows-125') and c in [150, 151]):
                 words.append(Word(text[0:i+1], height=height, may_break = True))
                 text = text[i+1:]
                 i = 0
@@ -304,7 +314,7 @@ class PrinterOutput:
                 self.line.append(w)
                 text = text[pre_whitespace:]
                 self.line_size += w.size
-        words = self.text_to_words(text, font_size)
+        words = self.text_to_words(text, font_size, encoding)
 
         # apply font settings
         self.word.height = max(self.word.height, font_size)
@@ -347,7 +357,7 @@ class PrinterOutput:
                 continue
             if w.is_tab(): w.size = self.get_tab_size()
             new_end = self.line_size + self.word.size + w.size
-            if self.line_size and new_end >= self.get_max_paragraph_width():
+            if self.line_size and new_end > self.get_max_paragraph_width() + 5/360:
                 # some rules for line breaks
                 # don't break between tab and word
                 if self.line[-1].is_tab() and not (self.word.is_tab() or self.word.is_space()):
@@ -416,31 +426,48 @@ def get_style_params(style):
     font_weight = style.get('font-weight')
     font_style = style.get('font-style')
     underline = style.get('text-underline-style')
-    assert font_name in supported_fonts, 'Unknown font'
+    #assert font_name in supported_fonts, 'Unknown font ' + str(font_name)
     assert font_size in supported_sizes, 'Font size has to be on of ' + str(supported_sizes)
     return font_name, font_size, font_weight, font_style, underline
 
 def print_odt(args, f):
     doc = ODT(args.path)
-    printer = PrinterOutput(f, doc.page_width, doc.page_height, doc.margin_top, doc.margin_bottom, doc.margin_left, doc.margin_right, args.character_table)
+    printer = PrinterOutput(f, doc.page_width, doc.page_height, doc.page_usage, doc.margin_top, doc.margin_bottom, doc.margin_left, doc.margin_right, args.character_table)
 
+    page_number = 1
     for paragraph in doc.parse_paragraphs():
         if paragraph.is_break:
-            printer.new_page()
+            page_number += 1
+            if page_number-1 in args.pages:
+                printer.new_page(page_number)
 
-        printer.new_paragraph(paragraph)
         result = doc.parse(paragraph.element, paragraph.style)
+
+        if page_number in args.pages or \
+            (result and result[0][1] == "\f" and page_number + 1 in args.pages):
+            result = doc.parse(paragraph.element, paragraph.style)
+            printer.new_paragraph(paragraph)
+        else:
+            printer.paragraph = paragraph
+            printer.allow_leading_whitespace = False
+            printer.allow_line_indent = False
 
         for style, text in result:
             font_style = get_style_params(style)
             if text == "\r\n":
-                printer.paragraph_break()
+                if page_number in args.pages:
+                    printer.paragraph_break()
             elif text == "\f":
-                printer.new_page()
+                page_number += 1
+                if page_number-1 in args.pages:
+                    printer.new_page(page_number)
             else:
-                printer.add_text(text, *font_style)
+                if page_number in args.pages:
+                    printer.set_page_margins(page_number)
+                    printer.add_text(text, *font_style)
 
-        printer.end_paragraph()
+        if page_number in args.pages:
+            printer.end_paragraph()
     printer.end()
 
 if __name__ == "__main__":
@@ -448,8 +475,22 @@ if __name__ == "__main__":
     parser.add_argument('--output', '-o', dest='output_filename', default=None, help='output device')
     parser.add_argument('--testpage', '-t', dest='testpage', action='store_true', help='print a test page with font samples')
     parser.add_argument('--character-table', '-c', dest='character_table', default="PC1250", help='select a character table, for example PC437, PC1250')
+    parser.add_argument('--page', '-p', dest='pages', help='start from given page number')
+    parser.add_argument('--odd', '-d', dest='odd', action='store_true', help='print only odd pages')
+    parser.add_argument('--even', '-e', dest='even', action='store_true', help='print only even pages')
     parser.add_argument('path', nargs='?', help='path to an ODT file')
     args = parser.parse_args()
+
+    if args.pages:
+        args.pages = range(int(args.pages), 10000)
+    if not args.pages:
+        args.pages = range(1,10000)
+    if args.odd:
+        assert not args.even
+        args.pages = [p for p in args.pages if p % 2]
+    elif args.even:
+        args.pages = [p for p in args.pages if p % 2 == 0]
+
 
     # validation
     if not args.testpage and (not args.path or not os.path.exists(args.path)):

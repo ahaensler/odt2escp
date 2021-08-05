@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 import zipfile
+from io import BytesIO
 
 ns = {
     "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
@@ -17,6 +18,7 @@ known_styles = {
     to_ns("style:header-style"): [],
     to_ns("style:footer-style"): [],
     to_ns("style:graphic-properties"): [],
+    to_ns("loext:graphic-properties"): [],
     to_ns("text:outline-level-style"): [],
     to_ns("style:page-layout-properties"): ["fo:page-width", "fo:page-height", "fo:print-orientation", "fo:margin-top", "fo:margin-bottom", "fo:margin-right", "fo:margin-left", "fo:line-height"],
     to_ns("style:paragraph-properties"): ["fo:text-align", "fo:break-before", "fo:margin-left", "fo:margin-right", "fo:margin-top", "fo:margin-bottom", "fo:text-indent"],
@@ -29,6 +31,8 @@ def to_inches(value):
 
 def parse_style(style):
     result = {}
+    if style.tag == to_ns("style:page-layout"):
+        result["page-usage"] = style.attrib.get(to_ns("style:page-usage"))
     psn = style.attrib.get(to_ns("style:parent-style-name"))
     if psn:
         result['parent-style-name'] = psn
@@ -112,7 +116,10 @@ class ODT:
         master_page_style = master_page.attrib.get(to_ns('style:page-layout-name'))
         mps = self.styles[master_page_style]
         for key, value in mps.items():
-            value = float(value.replace('in',''))
+            try:
+                value = float(value.replace('in',''))
+            except:
+                pass
             setattr(self, key.replace('-', '_'), value)
 
         # 2nd pass: merge all parent styles recursively
@@ -128,12 +135,13 @@ class ODT:
             merge_parent_style(style)
 
     def parse_paragraphs(self):
-        paragraphs = self.text.findall('text:p', ns)
+        paragraphs = self.text.iter()
         result = []
         for i, p in enumerate(paragraphs):
-            style_name = p.attrib.get(to_ns('text:style-name'))
-            style = self.styles[style_name]
-            result.append(Paragraph.from_odt_element(p, style, i))
+            if p.tag in [to_ns("text:h"), to_ns("text:p")]:
+                style_name = p.attrib.get(to_ns('text:style-name'))
+                style = self.styles[style_name]
+                result.append(Paragraph.from_odt_element(p, style, i))
         return result
 
     # returns text and style information recursivly from the given xml element
