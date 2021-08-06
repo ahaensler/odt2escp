@@ -17,6 +17,9 @@ class Word:
     def is_tab(self):
         return self.text == b"\t"
 
+    def is_soft_hyphen(self):
+        return self.text and self.text[-1] == 0xad
+
     def append(self, other):
         self.text += other.text
         self.size += other.size
@@ -46,6 +49,7 @@ class PrinterOutput:
         self.allow_line_indent = False
         self.default_tab_spacing = 12.5/25.4
         self.font_size = 10.5
+        self.character_table = None
 
         self.esc('@')
         self.set_line_spacing(30)
@@ -69,12 +73,16 @@ class PrinterOutput:
         self.esc('l', int(margin_left * 10 - 1)) # set left margin
         self.last_margin_left = margin_left
 
-    def load_character_table(self, table_name):
+    def load_character_table(self, table_name, no_write = None):
+        if not no_write and self.character_table == table_name: return
         code = character_table_to_code.get(table_name)
         assert code, "Unsupported character table " + str(table_name)
         table_index = 1
-        self.esc('(t',3,0, table_index, *code) # PC1251 -> table 1
-        self.character_table = table_name
+        result = self.esc('(t',3,0, table_index, *code, no_write = no_write) # PC1251 -> table 1
+        if no_write:
+            return result
+        else:
+            self.character_table = table_name
 
     def get_max_paragraph_width(self):
         res = self.max_text_width - self.paragraph.margin_left - self.paragraph.margin_right
@@ -249,6 +257,12 @@ class PrinterOutput:
 
     def add_word(self):
         if self.word.size:
+            if self.line and self.line[-1].is_soft_hyphen():
+                # remove unused soft hyphen
+                self.line[-1].text = self.line[-1].text[:-1]
+                soft_hyphen_size = 30/360 * self.font_scale_factor
+                self.line[-1].size -= soft_hyphen_size
+                self.line_size -= soft_hyphen_size
             self.line.append(self.word)
             self.line_height = max(self.line_height, self.word.height)
             self.line_size += self.word.size
@@ -259,18 +273,20 @@ class PrinterOutput:
             return 30
         return proportional_character_width.get(c)
 
+    # split text into words and encode them according to the selected character table
     def text_to_words(self, text, height, encoding):
         words = []
         i = 0
         while i < len(text):
-            c = text[i]
+            c = ord(text[i])
             if c == 9 or c == 32:
                 if i > 0:
                     words.append(Word(text[0:i], height=height, may_break = True))
                 words.append(Word(text[i:i+1], height=height, may_break = True))
                 text = text[i+1:]
                 i = 0
-            elif c == ord('-') or (encoding.startswith('windows-125') and c in [150, 151]):
+            # hyphen, soft hyphen and dash
+            elif c in [ord('-'), 0xad, ord('–'), ord('—')]:
                 words.append(Word(text[0:i+1], height=height, may_break = True))
                 text = text[i+1:]
                 i = 0
@@ -284,9 +300,10 @@ class PrinterOutput:
             word.size = 0
             for c in word.text:
                 size = self.get_character_width(c)
-                assert not size is None, "Undefined character code %i" % c
+                assert not size is None, "Undefined character code %s (%x, %s)" % (c, ord(c), word.text[:10])
                 word.size += size
             word.size = word.size / 360 * self.font_scale_factor
+            word.text = word.text.encode(encoding)
         return words
 
     def get_tab_size(self):
@@ -296,11 +313,36 @@ class PrinterOutput:
 
     # first pass of assembling words into a line, decides on where to break lines
     def add_text(self, text, font_name, font_size, weight, style, underline):
-        encoding = character_tables[self.character_table][0]
-        text = text.encode(encoding)
+        character_table = self.character_table
+        encoding = character_tables[character_table][0]
+        try_character_tables = ['PC1250', 'PC437', 'PC869']
+        while 1:
+            try:
+                text.encode(encoding)
+                break
+            except UnicodeEncodeError as error:
+                if error.start:
+                    self.break_text(text[:error.start], font_name, font_size, weight, style, underline, character_table)
+                text = text[error.start:]
+                char = text[0]
+                for character_table in try_character_tables:
+                    try:
+                        encoding = character_tables[character_table][0]
+                        char.encode(encoding)
+                        break
+                    except:
+                        continue
+                else:
+                    raise Exception("The character %s cannot be encoded" % char)
+                continue
 
+        if len(text):
+            self.break_text(text, font_name, font_size, weight, style, underline, character_table)
+
+    def break_text(self, text, font_name, font_size, weight, style, underline, character_table):
+        encoding = character_tables[character_table][0]
         self.font_scale_factor = font_size / 10.5
-        self.whitespace_width = proportional_character_width.get(ord(' ')) / 360 * self.font_scale_factor
+        self.whitespace_width = proportional_character_width.get(' ') / 360 * self.font_scale_factor
 
         # preserve leading whitespace of the first line in a paragraph
         if self.allow_leading_whitespace and len(self.line) == 0:
@@ -321,9 +363,12 @@ class PrinterOutput:
         font_code = font_name_to_code(font_name)
         if font_code in proportional_fonts: pitch = None
         else: pitch = 10
-        if not font_code in character_tables[self.character_table][1]:
+
+        if not font_code in character_tables[character_table][1]:
             print("Falling back to PC437")
-            self.load_character_table('PC437')
+            self.word.text += self.load_character_table('PC437', no_write = True)
+        elif self.character_table != character_table:
+            self.word.text += self.load_character_table(character_table, no_write = True)
         if font_size != self.font_size or pitch != self.pitch:
             if font_code in proportional_fonts:
                 self.word.text += b"\x1bX\x01"
@@ -357,6 +402,8 @@ class PrinterOutput:
                 continue
             if w.is_tab(): w.size = self.get_tab_size()
             new_end = self.line_size + self.word.size + w.size
+            # the condition which determines when to break a line
+            # there's some added allowance for rounding errors in the font used
             if self.line_size and new_end > self.get_max_paragraph_width() + 5/360:
                 # some rules for line breaks
                 # don't break between tab and word
@@ -375,13 +422,16 @@ class PrinterOutput:
                         self.add_word()
                     self.process_line()
                 if w.is_tab(): w.size = self.get_tab_size()
-            self.add_word()
+            if self.word.may_break:
+                self.add_word()
             self.word.append(w)
 
         if self.word.is_tab(): 
             self.add_word()
 
         # reset font to default
+        if self.character_table != character_table:
+            self.word.text += self.load_character_table(self.character_table, no_write = True)
         if font_size != 10.5:
             self.word.text += b"\x1bX\x00\x15\x00"
         if style == "italic":
@@ -427,7 +477,7 @@ def get_style_params(style):
     font_style = style.get('font-style')
     underline = style.get('text-underline-style')
     #assert font_name in supported_fonts, 'Unknown font ' + str(font_name)
-    assert font_size in supported_sizes, 'Font size has to be on of ' + str(supported_sizes)
+    assert font_size in supported_sizes, 'Font size has to be one of ' + str(supported_sizes)
     return font_name, font_size, font_weight, font_style, underline
 
 def print_odt(args, f):

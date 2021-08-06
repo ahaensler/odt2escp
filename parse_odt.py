@@ -20,14 +20,20 @@ known_styles = {
     to_ns("style:graphic-properties"): [],
     to_ns("loext:graphic-properties"): [],
     to_ns("text:outline-level-style"): [],
+    to_ns("text:list-level-style-number"): [],
     to_ns("style:page-layout-properties"): ["fo:page-width", "fo:page-height", "fo:print-orientation", "fo:margin-top", "fo:margin-bottom", "fo:margin-right", "fo:margin-left", "fo:line-height"],
     to_ns("style:paragraph-properties"): ["fo:text-align", "fo:break-before", "fo:margin-left", "fo:margin-right", "fo:margin-top", "fo:margin-bottom", "fo:text-indent"],
     to_ns("style:text-properties"): ["style:font-name", "fo:font-style", "fo:font-weight", "fo:font-size", "style:text-underline-style"],
 }
 
 def to_inches(value):
-    assert value[-2:] == "in"
-    return float(value[:-2])
+    if type(value) == str:
+        assert value[-2:] == "in"
+        return float(value[:-2])
+    elif value == 0:
+        return value
+    else:
+        assert False
 
 def parse_style(style):
     result = {}

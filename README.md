@@ -1,6 +1,6 @@
 # Print Open Office documents with Epson ESC/P2 printers
 ## Introduction
-A printer driver for ESC/P2 printers and ODT documents. The driver uses native text mode and achive better quality and speed compared to raster mode. A free font is included that provides correct spacing of characters in modern WYSIWYG editors.
+A printer driver for ESC/P2 printers and ODT documents. The driver uses native text mode and achives better quality and speed compared to raster mode. A free font is included that provides correct spacing of characters in modern WYSIWYG editors.
 
 ## Dependencies
 Python 3.9 or later
