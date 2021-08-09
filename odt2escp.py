@@ -312,7 +312,7 @@ class PrinterOutput:
         return res
 
     # first pass of assembling words into a line, decides on where to break lines
-    def add_text(self, text, font_name, font_size, weight, style, underline):
+    def add_text(self, text, font_name, font_size, weight, style, underline, position):
         character_table = self.character_table
         encoding = character_tables[character_table][0]
         try_character_tables = ['PC1250', 'PC437', 'PC869']
@@ -322,7 +322,7 @@ class PrinterOutput:
                 break
             except UnicodeEncodeError as error:
                 if error.start:
-                    self.break_text(text[:error.start], font_name, font_size, weight, style, underline, character_table)
+                    self.break_text(text[:error.start], font_name, font_size, weight, style, underline, position, character_table)
                 text = text[error.start:]
                 char = text[0]
                 for character_table in try_character_tables:
@@ -337,9 +337,9 @@ class PrinterOutput:
                 continue
 
         if len(text):
-            self.break_text(text, font_name, font_size, weight, style, underline, character_table)
+            self.break_text(text, font_name, font_size, weight, style, underline, position, character_table)
 
-    def break_text(self, text, font_name, font_size, weight, style, underline, character_table):
+    def break_text(self, text, font_name, font_size, weight, style, underline, position, character_table):
         encoding = character_tables[character_table][0]
         self.font_scale_factor = font_size / 10.5
         self.whitespace_width = proportional_character_width.get(' ') / 360 * self.font_scale_factor
@@ -377,8 +377,6 @@ class PrinterOutput:
             else:
                 self.word.text += b"\x1bp\x00" # turn off proportional mode
                 self.word.text += b"\x1bP" # cancel multipoint, select 10 cpi
-            self.font_size = font_size
-            self.pitch = pitch
         if style == "italic":
             self.word.text += b"\x1b4"
         if weight == "bold":
@@ -389,6 +387,11 @@ class PrinterOutput:
         if font_code != self.font_code:
             previous_font = self.font_code
             self.word.text += self.set_font(font_code, no_write=True)
+        if position:
+            if position.startswith("super"):
+                self.word.text += b"\x1bS\x00"
+            elif position.startswith("sub"):
+                self.word.text += b"\x1bS\x01"
 
         # determine line breaks
         for i, w in enumerate(words):
@@ -442,6 +445,8 @@ class PrinterOutput:
             self.word.text += b"\x1b-\x00"
         if previous_font:
             self.word.text += self.set_font(previous_font, no_write=True)
+        if position:
+            self.word.text += b"\x1bT"
 
 def print_font_test_page(f):
     printer = PrinterOutput(f)
@@ -463,7 +468,7 @@ def print_font_test_page(f):
         sizes = [10.5, 14] if code in scalable_fonts else [10.5]
         for size in sizes:
             printer.new_paragraph(Paragraph())
-            printer.add_text("c=%d %.1fpt - The quick brown fox jumps over the lazy dog" % (code, size), font_name, size, None, None, None)
+            printer.add_text("c=%d %.1fpt - The quick brown fox jumps over the lazy dog" % (code, size), font_name, size, None, None, None, None)
             printer.end_paragraph()
     printer.end()
 
@@ -476,9 +481,10 @@ def get_style_params(style):
     font_weight = style.get('font-weight')
     font_style = style.get('font-style')
     underline = style.get('text-underline-style')
+    position = style.get('text-position')
     #assert font_name in supported_fonts, 'Unknown font ' + str(font_name)
     assert font_size in supported_sizes, 'Font size has to be one of ' + str(supported_sizes)
-    return font_name, font_size, font_weight, font_style, underline
+    return font_name, font_size, font_weight, font_style, underline, position
 
 def print_odt(args, f):
     doc = ODT(args.path)

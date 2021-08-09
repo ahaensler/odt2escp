@@ -23,7 +23,7 @@ known_styles = {
     to_ns("text:list-level-style-number"): [],
     to_ns("style:page-layout-properties"): ["fo:page-width", "fo:page-height", "fo:print-orientation", "fo:margin-top", "fo:margin-bottom", "fo:margin-right", "fo:margin-left", "fo:line-height"],
     to_ns("style:paragraph-properties"): ["fo:text-align", "fo:break-before", "fo:margin-left", "fo:margin-right", "fo:margin-top", "fo:margin-bottom", "fo:text-indent"],
-    to_ns("style:text-properties"): ["style:font-name", "fo:font-style", "fo:font-weight", "fo:font-size", "style:text-underline-style"],
+    to_ns("style:text-properties"): ["style:font-name", "fo:font-style", "fo:font-weight", "fo:font-size", "style:text-underline-style", "style:text-position"],
 }
 
 def to_inches(value):
